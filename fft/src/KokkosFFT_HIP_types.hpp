@@ -56,7 +56,10 @@ struct ScopedHIPfftPlan {
     KOKKOSFFT_THROW_IF(hipfft_rt != HIPFFT_SUCCESS, "hipfftPlanMany failed");
   }
 
-  ~ScopedHIPfftPlan() noexcept { cleanup(); }
+  ~ScopedHIPfftPlan() noexcept {
+    hipfftResult hipfft_rt = hipfftDestroy(m_plan);
+    if (hipfft_rt != HIPFFT_SUCCESS) Kokkos::abort("hipfftDestroy failed");
+  }
 
   ScopedHIPfftPlan()                                    = delete;
   ScopedHIPfftPlan(const ScopedHIPfftPlan &)            = delete;
@@ -65,22 +68,10 @@ struct ScopedHIPfftPlan {
   ScopedHIPfftPlan(ScopedHIPfftPlan &&)                 = delete;
 
   hipfftHandle plan() const noexcept { return m_plan; }
-  void commit(const Kokkos::HIP &exec_space) {
-    hipStream_t stream = exec_space.hip_stream();
-    try {
-      hipfftResult hipfft_rt = hipfftSetStream(m_plan, stream);
-      KOKKOSFFT_THROW_IF(hipfft_rt != HIPFFT_SUCCESS, "hipfftSetStream failed");
-    } catch (const std::runtime_error &e) {
-      std::cerr << e.what() << std::endl;
-      cleanup();
-      throw;
-    }
-  }
 
- private:
-  void cleanup() {
-    hipfftResult hipfft_rt = hipfftDestroy(m_plan);
-    if (hipfft_rt != HIPFFT_SUCCESS) Kokkos::abort("hipfftDestroy failed");
+  void commit(const Kokkos::HIP &exec_space) const {
+    hipfftResult hipfft_rt = hipfftSetStream(m_plan, exec_space.hip_stream());
+    KOKKOSFFT_THROW_IF(hipfft_rt != HIPFFT_SUCCESS, "hipfftSetStream failed");
   }
 };
 
