@@ -50,13 +50,62 @@ struct ScopedRocfftPlanDescription {
     KOKKOSFFT_THROW_IF(status != rocfft_status_success,
                        "rocfft_plan_description_create failed");
   }
+
+  ScopedRocfftPlanDescription(const ScopedRocfftPlanDescription &rhs) = delete;
+
+  ScopedRocfftPlanDescription(ScopedRocfftPlanDescription &&rhs) = delete;
+
   ~ScopedRocfftPlanDescription() noexcept {
     rocfft_status status = rocfft_plan_description_destroy(m_description);
     if (status != rocfft_status_success)
       Kokkos::abort("rocfft_plan_description_destroy failed");
   }
 
+  ScopedRocfftPlanDescription &operator=(
+      const ScopedRocfftPlanDescription &rhs) = delete;
+
+  ScopedRocfftPlanDescription &operator=(ScopedRocfftPlanDescription &&rhs) =
+      delete;
+
   rocfft_plan_description description() const noexcept { return m_description; }
+};
+
+/// \brief A class that wraps rocfft_execution_info for RAII
+struct ScopedRocfftExecutionInfo {
+ private:
+  rocfft_execution_info m_execution_info;
+
+ public:
+  ScopedRocfftExecutionInfo() {
+    rocfft_status status = rocfft_execution_info_create(&m_execution_info);
+    KOKKOSFFT_THROW_IF(status != rocfft_status_success,
+                       "rocfft_execution_info_create failed");
+  }
+
+  ScopedRocfftExecutionInfo(const ScopedRocfftExecutionInfo &rhs) = delete;
+
+  ScopedRocfftExecutionInfo(ScopedRocfftExecutionInfo &&rhs) = delete;
+
+  ~ScopedRocfftExecutionInfo() noexcept {
+    rocfft_status status = rocfft_execution_info_destroy(m_execution_info);
+    if (status != rocfft_status_success)
+      Kokkos::abort("rocfft_execution_info_destroy failed");
+  }
+
+  ScopedRocfftExecutionInfo &operator=(const ScopedRocfftExecutionInfo &rhs) =
+      delete;
+
+  ScopedRocfftExecutionInfo &operator=(ScopedRocfftExecutionInfo &&rhs) =
+      delete;
+
+  rocfft_execution_info info() const noexcept { return m_execution_info; }
+
+  void set_stream(const Kokkos::HIP &exec_space) const noexcept {
+    rocfft_status status = rocfft_execution_info_set_stream(
+        m_execution_info, exec_space.hip_stream());
+    KOKKOSFFT_THROW_IF(status != rocfft_status_success,
+                       "rocfft_execution_info_set_stream failed");
+  }
 };
 
 /// \brief A class that wraps rocfft for RAII
@@ -71,7 +120,7 @@ struct ScopedRocfftPlan {
                                      ? rocfft_precision_single
                                      : rocfft_precision_double;
   rocfft_plan m_plan;
-  rocfft_execution_info m_execution_info;
+  ScopedRocfftExecutionInfo m_execution_info;
 
   //! Internal work buffer
   BufferViewType m_buffer;
@@ -128,7 +177,12 @@ struct ScopedRocfftPlan {
     KOKKOSFFT_THROW_IF(status != rocfft_status_success,
                        "rocfft_plan_create failed");
   }
-  ~ScopedRocfftPlan() noexcept { cleanup(); }
+
+  ~ScopedRocfftPlan() noexcept {
+    rocfft_status status = rocfft_plan_destroy(m_plan);
+    if (status != rocfft_status_success)
+      Kokkos::abort("rocfft_plan_destroy failed");
+  }
 
   ScopedRocfftPlan()                                    = delete;
   ScopedRocfftPlan(const ScopedRocfftPlan &)            = delete;
@@ -137,54 +191,30 @@ struct ScopedRocfftPlan {
   ScopedRocfftPlan(ScopedRocfftPlan &&)                 = delete;
 
   rocfft_plan plan() const noexcept { return m_plan; }
-  rocfft_execution_info execution_info() const noexcept {
+  ScopedRocfftExecutionInfo const &execution_info() const noexcept {
     return m_execution_info;
   }
 
   void commit(const Kokkos::HIP &exec_space) {
-    try {
-      // Prepare workbuffer and set execution information
-      rocfft_status status = rocfft_execution_info_create(&m_execution_info);
+    m_execution_info.set_stream(exec_space);
+    if (std::size_t workbuffersize = get_work_buffer_size();
+        workbuffersize > 0) {
+      m_buffer = BufferViewType("workbuffer", workbuffersize);
+      status   = rocfft_execution_info_set_work_buffer(
+          m_execution_info.info(), (void *)m_buffer.data(), workbuffersize);
       KOKKOSFFT_THROW_IF(status != rocfft_status_success,
-                         "rocfft_execution_info_create failed");
-
-      // set stream
-      // NOTE: The stream must be of type hipStream_t.
-      // It is an error to pass the address of a hipStream_t object.
-      hipStream_t stream = exec_space.hip_stream();
-      status = rocfft_execution_info_set_stream(m_execution_info, stream);
-      KOKKOSFFT_THROW_IF(status != rocfft_status_success,
-                         "rocfft_execution_info_set_stream failed");
-
-      // Set work buffer
-      std::size_t workbuffersize = 0;
-      status = rocfft_plan_get_work_buffer_size(m_plan, &workbuffersize);
-      KOKKOSFFT_THROW_IF(status != rocfft_status_success,
-                         "rocfft_plan_get_work_buffer_size failed");
-
-      if (workbuffersize > 0) {
-        m_buffer = BufferViewType("workbuffer", workbuffersize);
-        status   = rocfft_execution_info_set_work_buffer(
-            m_execution_info, (void *)m_buffer.data(), workbuffersize);
-        KOKKOSFFT_THROW_IF(status != rocfft_status_success,
-                           "rocfft_execution_info_set_work_buffer failed");
-      }
-    } catch (const std::runtime_error &e) {
-      std::cerr << e.what() << std::endl;
-      cleanup();
-      throw;
+                         "rocfft_execution_info_set_work_buffer failed");
     }
   }
 
  private:
-  void cleanup() {
-    rocfft_status status = rocfft_plan_destroy(m_plan);
-    if (status != rocfft_status_success)
-      Kokkos::abort("rocfft_plan_destroy failed");
-
-    status = rocfft_execution_info_destroy(m_execution_info);
-    if (status != rocfft_status_success)
-      Kokkos::abort("rocfft_execution_info_destroy failed");
+  std::size_t get_work_buffer_size() const {
+    std::size_t workbuffersize = 0;
+    rocfft_status status =
+        rocfft_plan_get_work_buffer_size(m_plan, &workbuffersize);
+    KOKKOSFFT_THROW_IF(status != rocfft_status_success,
+                       "rocfft_plan_get_work_buffer_size failed");
+    return workbuffersize;
   }
 
   // Helper to get input and output array type and direction from transform type

@@ -16,7 +16,7 @@ inline void exec_plan(const ScopedRocfftPlan<float>& scoped_plan, float* idata,
                       std::complex<float>* odata, int /*direction*/) {
   rocfft_status status =
       rocfft_execute(scoped_plan.plan(), (void**)&idata, (void**)&odata,
-                     scoped_plan.execution_info());
+                     scoped_plan.execution_info().info());
   KOKKOSFFT_THROW_IF(status != rocfft_status_success,
                      "rocfft_execute for R2C failed");
 }
